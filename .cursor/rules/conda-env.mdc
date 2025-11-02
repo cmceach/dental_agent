@@ -1,0 +1,5 @@
+---
+alwaysApply: true
+---
+
+always use the "dental_agent" conda environment when installing packages and running code.
