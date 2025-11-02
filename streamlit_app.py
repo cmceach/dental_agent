@@ -221,10 +221,11 @@ with st.sidebar:
                         tmp_file.write(uploaded_file.read())
                         tmp_path = tmp_file.name
                     
-                    # Upload to Gemini File API
+                    # Upload to Gemini File API with display name
                     gemini_file = genai.upload_file(
                         path=tmp_path,
-                        mime_type="application/pdf"
+                        mime_type="application/pdf",
+                        display_name=file_name
                     )
                     
                     # Clean up temporary file

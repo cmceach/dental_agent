@@ -316,10 +316,11 @@ def upload_pdf_to_gemini(pdf_bytes: bytes, filename: str, source_url: str, gemin
             tmp_path = tmp_file.name
         
         try:
-            # Upload to Gemini File API
+            # Upload to Gemini File API with display name
             gemini_file = genai.upload_file(
                 path=tmp_path,
-                mime_type="application/pdf"
+                mime_type="application/pdf",
+                display_name=filename
             )
             
             # Wait for file to be processed
