@@ -137,6 +137,75 @@ def extract_auto_uploaded_pdfs(tool_result: str) -> List[Dict]:
     return []
 
 
+def renumber_inline_citations(text: str) -> str:
+    """
+    Post-process response text to replace inline citations with sequential numbers.
+    
+    Extracts citations from Sources section and creates a mapping, then replaces
+    inline citations to match the Sources numbering. Also removes the 
+    "(from search result [X])" annotations from the Sources section.
+    
+    Args:
+        text: The full response text including Sources section
+        
+    Returns:
+        str: Text with renumbered inline citations and cleaned Sources
+    """
+    import re
+    
+    # Extract Sources section
+    sources_match = re.search(r'## Sources\s*\n(.*?)(?:\n\n|$)', text, re.DOTALL)
+    if not sources_match:
+        return text
+    
+    sources_text = sources_match.group(1)
+    
+    # Extract mapping from Sources: [1] ... (from search result [X])
+    # Pattern: [sequential_num] ... (from search result [original_num])
+    mapping = {}  # original_num -> sequential_num
+    for line in sources_text.split('\n'):
+        match = re.search(r'- \[(\d+)\].*\(from search result \[(\d+)\]\)', line)
+        if match:
+            sequential_num = match.group(1)
+            original_num = match.group(2)
+            mapping[original_num] = sequential_num
+    
+    # If no mapping found, still clean the sources section
+    if not mapping:
+        # Just remove "(from search result [X])" annotations
+        sources_text_cleaned = re.sub(r'\s*\(from search result \[\d+\]\)', '', sources_text)
+        sources_start = text.find('## Sources')
+        if sources_start != -1:
+            text_before_sources = text[:sources_start]
+            return text_before_sources + '## Sources\n' + sources_text_cleaned
+        return text
+    
+    # Split text into before Sources and Sources sections
+    sources_start = text.find('## Sources')
+    if sources_start == -1:
+        return text
+    
+    text_before_sources = text[:sources_start]
+    sources_section = text[sources_start:]
+    
+    # Replace inline citations in the text before Sources
+    # Sort by original number (descending) to avoid issues with overlapping replacements
+    for original_num in sorted(mapping.keys(), key=int, reverse=True):
+        sequential_num = mapping[original_num]
+        if original_num != sequential_num:
+            # Replace [original_num] with [sequential_num] in text before Sources
+            text_before_sources = re.sub(
+                r'\[' + original_num + r'\]',
+                f'[{sequential_num}]',
+                text_before_sources
+            )
+    
+    # Remove "(from search result [X])" annotations from Sources section
+    sources_section_cleaned = re.sub(r'\s*\(from search result \[\d+\]\)', '', sources_section)
+    
+    return text_before_sources + sources_section_cleaned
+
+
 def extract_text_content(message_content):
     """
     Extract plain text from message content, handling both string and structured formats.
@@ -495,7 +564,9 @@ if prompt := st.chat_input("Ask a question about dental guidelines..."):
             
             # Display final response if we have one
             if full_response:
-                response_placeholder.markdown(full_response)
+                # Post-process: renumber inline citations to match Sources section
+                full_response_display = renumber_inline_citations(full_response)
+                response_placeholder.markdown(full_response_display)
                 
                 # Add to message history (store the original content structure)
                 ai_message = AIMessage(content=full_response)

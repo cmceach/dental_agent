@@ -117,12 +117,13 @@ def detect_pdf_url(url: str) -> bool:
     return url_lower.endswith('.pdf') or '.pdf?' in url_lower or 'application/pdf' in url_lower
 
 
-def check_existing_gemini_file(url: str, gemini_files_cache: Optional[List] = None) -> Optional[Any]:
+def check_existing_gemini_file(url: str, filename: Optional[str] = None, gemini_files_cache: Optional[List] = None) -> Optional[Any]:
     """
-    Check if a PDF with the same URL already exists in Gemini File API.
+    Check if a PDF with the same URL or filename already exists in Gemini File API.
     
     Args:
         url: Source URL of the PDF
+        filename: Optional filename to check (if None, extracted from URL)
         gemini_files_cache: Optional cached list of Gemini files to avoid repeated API calls
         
     Returns:
@@ -151,16 +152,36 @@ def check_existing_gemini_file(url: str, gemini_files_cache: Optional[List] = No
         else:
             files = gemini_files_cache
         
-        # Extract filename from URL for matching
-        url_filename = os.path.basename(url.split('?')[0])  # Remove query params
+        # Extract filename from URL if not provided
+        if filename is None:
+            filename = os.path.basename(url.split('?')[0])  # Remove query params
         
-        # Check each file for URL match
+        # Normalize filename for comparison (lowercase, remove path)
+        normalized_filename = os.path.basename(filename).lower().strip()
+        url_filename = os.path.basename(url.split('?')[0]).lower().strip()
+        
+        # Check each file for matches
         for file in files:
-            # Check if file name matches or if we can match by URL in metadata
+            # Check by display_name (most reliable)
+            display_name = getattr(file, 'display_name', None)
+            if display_name:
+                normalized_display = os.path.basename(display_name).lower().strip()
+                # Match if display name matches filename or URL filename
+                if normalized_display == normalized_filename or normalized_display == url_filename:
+                    logger.info(f"✅ File already exists in Gemini API: '{display_name}' (matches '{filename}') - Skipping upload")
+                    return file
+                
+                # Also check if filename is contained in display name (handles variations)
+                if normalized_filename in normalized_display or url_filename in normalized_display:
+                    logger.info(f"✅ File already exists in Gemini API: '{display_name}' (partial match with '{filename}') - Skipping upload")
+                    return file
+            
+            # Fallback: Check if URL filename matches file name/URI
             if hasattr(file, 'name'):
-                file_name = file.name.lower() if hasattr(file, 'name') else ''
-                if url_filename.lower() in file_name or url in str(file_name):
-                    logger.info(f"Found existing Gemini file for URL: {url}")
+                file_name = str(file.name).lower()
+                if url_filename in file_name or url in file_name:
+                    display_name = getattr(file, 'display_name', file.name)
+                    logger.info(f"✅ File already exists in Gemini API: '{display_name}' (URL match) - Skipping upload")
                     return file
         
         return None
@@ -226,8 +247,15 @@ def download_pdf_from_url(url: str, max_size_mb: int = 25, timeout: int = 30) ->
 
 def get_pdf_text_from_gemini(gemini_file_uri: str) -> Optional[str]:
     """
-    Retrieve the extracted text content from a PDF file in Gemini File API.
-    This is useful for debugging what text Gemini is actually extracting from PDFs.
+    DEBUG UTILITY ONLY: Retrieve the extracted text content from a PDF file in Gemini File API.
+    
+    NOTE: This function is ONLY for debugging purposes. In normal operation, PDFs are referenced
+    directly by their file_uri in messages sent to Gemini. The Gemini API processes PDFs natively
+    and doesn't require text extraction - files are referenced via file_uri and Gemini handles
+    document processing internally.
+    
+    This function is used by the "Debug Text" button in the Streamlit UI to help diagnose
+    issues with PDF text extraction (e.g., table formatting problems).
     
     Args:
         gemini_file_uri: The URI of the file in Gemini File API
@@ -255,14 +283,12 @@ def get_pdf_text_from_gemini(gemini_file_uri: str) -> Optional[str]:
             logger.warning(f"File not found for URI: {gemini_file_uri}")
             return None
         
-        # Use Gemini to extract text from the PDF
-        # Create a simple model instance to extract text
-        # Use the same model as configured in the agent
+        # DEBUG ONLY: Use Gemini to extract text from the PDF for debugging purposes
+        # In normal operation, files are referenced by file_uri directly - no extraction needed
         model_name = os.environ.get("MODEL", "gemini-2.5-flash")
         model = genai.GenerativeModel(model_name)
         
-        # Use the file in a simple prompt to get its text content
-        # Request detailed table extraction with structure preservation
+        # Request detailed table extraction with structure preservation for debugging
         response = model.generate_content([
             "Extract and return the full text content of this PDF document, preserving tables and formatting as much as possible. "
             "For tables, include: (1) Table title/heading, (2) Column headers, (3) All row data with proper column alignment, "
@@ -304,10 +330,11 @@ def upload_pdf_to_gemini(pdf_bytes: bytes, filename: str, source_url: str, gemin
         
         genai.configure(api_key=api_key)
         
-        # Check if file already exists
-        existing_file = check_existing_gemini_file(source_url, gemini_files_cache)
+        # Check if file already exists (by URL and filename)
+        existing_file = check_existing_gemini_file(source_url, filename, gemini_files_cache)
         if existing_file:
-            logger.info(f"Reusing existing Gemini file for: {source_url}")
+            existing_display = getattr(existing_file, 'display_name', filename)
+            logger.info(f"✅ File '{filename}' already exists in Gemini API as '{existing_display}' - Reusing existing file (skipping upload)")
             return existing_file
         
         # Save to temporary file (required by genai.upload_file)
@@ -452,21 +479,22 @@ def create_dental_tool(exa_client: Exa):
                 pdf_uploaded = False
                 if auto_upload_pdfs and detect_pdf_url(result.url):
                     try:
-                        # Check if already uploaded
-                        existing_file = check_existing_gemini_file(result.url, gemini_files_cache)
+                        # Extract filename from URL first
+                        filename = os.path.basename(result.url.split('?')[0]) or f"document_{i}.pdf"
+                        
+                        # Check if already uploaded (by URL and filename)
+                        existing_file = check_existing_gemini_file(result.url, filename, gemini_files_cache)
                         was_reused = existing_file is not None
                         
                         if existing_file:
                             gemini_file = existing_file
                             pdf_uploaded = True
-                            logger.info(f"Reusing existing Gemini file for PDF: {result.url}")
+                            existing_display = getattr(existing_file, 'display_name', filename)
+                            logger.info(f"✅ PDF '{filename}' already exists in Gemini API as '{existing_display}' - Reusing existing file (skipping auto-upload)")
                         else:
                             # Download PDF
                             pdf_bytes = download_pdf_from_url(result.url, max_size_mb=max_pdf_size_mb)
                             if pdf_bytes:
-                                # Extract filename from URL
-                                filename = os.path.basename(result.url.split('?')[0]) or f"document_{i}.pdf"
-                                
                                 # Upload to Gemini
                                 gemini_file = upload_pdf_to_gemini(pdf_bytes, filename, result.url, gemini_files_cache)
                                 if gemini_file:
@@ -484,13 +512,16 @@ def create_dental_tool(exa_client: Exa):
                                 "citation_number": i
                             })
                             
-                            # Add note in formatted results
+                            # Add note in formatted results with explicit URL matching
+                            pdf_note = f"    📄 PDF auto-uploaded and available for direct reference\n"
+                            pdf_note += f"    ⚠️ NOTE: Citation [{i}] is a PDF document available for multimodal reference\n"
+                            pdf_note += f"    ⚠️ Use [{i}] when citing this PDF source in your response\n"
+                            
                             if was_reused:
                                 formatted_results += f"    📄 PDF available for direct reference (reused from previous upload)\n"
-                                formatted_results += f"    ⚠️ NOTE: This PDF was auto-uploaded. If you cite both the search result URL [{i}] and the PDF [PDF], only list the PDF in Sources section (not the URL separately).\n"
+                                formatted_results += pdf_note
                             else:
-                                formatted_results += f"    📄 PDF auto-uploaded and available for direct reference\n"
-                                formatted_results += f"    ⚠️ NOTE: This PDF was auto-uploaded. If you cite both the search result URL [{i}] and the PDF [PDF], only list the PDF in Sources section (not the URL separately).\n"
+                                formatted_results += pdf_note
                                 
                     except Exception as e:
                         logger.warning(f"Failed to auto-upload PDF from {result.url}: {e}")
@@ -525,8 +556,13 @@ def create_dental_tool(exa_client: Exa):
             formatted_results += "- In your Sources section, ONLY list the sources you actually cited/referenced in your response text.\n"
             formatted_results += "- Do NOT list all available sources - only include the ones you used.\n"
             formatted_results += "- CRITICAL: In the Sources section, you MUST renumber citations sequentially starting from [1], even if your inline citations used different numbers.\n"
-            formatted_results += "- Example: If you cited [1], [2], [7], [11] in your text, list them in Sources as [1], [2], [3], [4] respectively.\n"
-            formatted_results += "- The Sources section should always start at [1] and continue sequentially [2], [3], [4], etc.\n"
+            formatted_results += "- MANDATORY FORMAT: Each Sources entry must show the original search result number: '[1] Title - URL (from search result [X])'\n"
+            formatted_results += "- Example: If you cited [1], [2], [7], [11] in your text, list them in Sources as:\n"
+            formatted_results += "  [1] Title - URL (from search result [1])\n"
+            formatted_results += "  [2] Title - URL (from search result [2])\n"
+            formatted_results += "  [3] Title - URL (from search result [7])\n"
+            formatted_results += "  [4] Title - URL (from search result [11])\n"
+            formatted_results += "- VALIDATION: Before finalizing, verify EVERY citation number you used inline appears in Sources. If you cited [8], [8] MUST be in Sources (renumbered).\n"
             
             # Encode auto-uploaded PDFs info at the end of the return string
             # Format: <AUTO_UPLOADED_PDFS>JSON</AUTO_UPLOADED_PDFS>
@@ -634,14 +670,14 @@ def create_citation_prompt(state: AgentState, config: RunnableConfig) -> List[An
     if has_pdf:
         pdf_names_str = ", ".join(pdf_filenames) if pdf_filenames else "uploaded PDF document"
         pdf_reminder = f"\n\nPDF DETECTED: You have received PDF document(s): {pdf_names_str}\n"
-        pdf_reminder += "- If you reference information from the PDF in your response, you MUST cite it as [PDF] in your response text.\n"
+        pdf_reminder += "- When you reference information from PDFs, cite them with sequential numbers (e.g., [4], [5]) like you would any other source.\n"
         
         # Check if any PDFs are auto-uploaded
         if auto_uploaded_pdfs:
             pdf_reminder += "- Some PDFs were auto-uploaded from search results - when citing them, include the original URL.\n"
-            pdf_reminder += "- Format for auto-uploaded PDFs in Sources: '- [PDF] [filename] (auto-uploaded from search) - [original URL]'\n"
+            pdf_reminder += "- Format for auto-uploaded PDFs in Sources: '- [4] [filename] (auto-uploaded from search) - [original URL]'\n"
         
-        pdf_reminder += f"- You MUST include the PDF in your Sources section with format: '- [PDF] {pdf_names_str}'\n"
+        pdf_reminder += f"- You MUST include PDFs in your sequential Sources section numbering (e.g., [4] {pdf_names_str})\n"
         pdf_reminder += "- Remember: PDFs are supplementary - you MUST still search the web and cite web sources.\n"
     
     citation_instructions = f"""You are a dental guideline assistant that provides evidence-based information from authoritative sources.{pdf_reminder}
@@ -664,28 +700,51 @@ CRITICAL WORKFLOW REQUIREMENT:
 CRITICAL CITATION REQUIREMENTS:
 - When you reference information from search results, you MUST include inline citations using the format [1], [2], [3], etc.
 - These citation numbers correspond to the numbered sources provided in the search results.
-- If you reference information from uploaded PDF documents, use a citation format like "[PDF]" or mention "uploaded document" or "attached PDF" in your response.
+- If you reference information from uploaded PDF documents, cite them with sequential numbers just like web sources (e.g., [4], [5]).
+- PDFs should be included in your sequential citation numbering - they are NOT cited as "[PDF]" but as regular numbers.
 - Always cite your sources immediately after referencing information from them.
 - Use multiple citations if information comes from multiple sources: [1][2]
-- ONLY include sources in the "Sources" section that you have ACTUALLY cited/referenced in your response text.
-- DO NOT list sources that were not referenced - only include sources that appear in your answer.
-- Include a "Sources" section at the end listing ONLY the cited web sources with their titles and URLs.
+
+CRITICAL SOURCES SECTION REQUIREMENTS - READ CAREFULLY:
+- You MUST create a Sources section that lists EVERY citation number you used inline, renumbered sequentially
+- BEFORE writing Sources: Scan your entire response text and extract ALL unique citation numbers
+  - Look for [1], [2], [3], etc. in square brackets
+  - Look for multiple citations like [2][7] - extract both [2] AND [7]
+  - Example: If text has [1][3], [1], [2][7], [8] → unique set is [1], [2], [3], [7], [8] (5 citations)
+- THEN: Create a sequential mapping: [1]→[1], [2]→[2], [3]→[3], [7]→[4], [8]→[5]
+- FINALLY: List each source in Sources using the new sequential number (not the original number)
+- MANDATORY FORMAT: You MUST show which search result each Sources entry came from:
+  "[1] Title - URL (from search result [1])"
+  "[2] Title - URL (from search result [2])"
+  "[3] Title - URL (from search result [3])"
+  "[4] Title - URL (from search result [7])"  ← Note: [7] becomes [4] in sequence
+  "[5] Title - URL (from search result [8])"  ← Note: [8] becomes [5] in sequence
+- CRITICAL: If you cited [2][7] together, you must list BOTH [2] and [7] separately in Sources
+- CRITICAL: If you cited [8] inline, it MUST appear in Sources (even if it's a PDF)
+- DO NOT skip any citation numbers - if you wrote [7] anywhere in your response, [7] MUST be in Sources
+- Count validation: If you used 5 unique citation numbers, Sources must have exactly 5 numbered entries
 - CRITICAL: In the Sources section, you MUST renumber citations sequentially starting from [1], even if your inline citations used different numbers.
-- For example: If you cited sources [1], [2], [3], [4], [5], [7], [11], [12], [14] in your text, list them in the Sources section as [1], [2], [3], [4], [5], [6], [7], [8], [9] respectively.
-- The Sources section should always start at [1] and continue sequentially [2], [3], [4], etc., regardless of what numbers you used inline.
+- HOW TO RENUMBER: Extract ALL unique citation numbers from your response text, sort them in ascending order, then map them sequentially.
+- Example: If you cited [1], [2], [3], [4], [8] in your text:
+  - Unique citations: [1], [2], [3], [4], [8] (sorted)
+  - Sequential mapping: [1]→[1], [2]→[2], [3]→[3], [4]→[4], [8]→[5]
+  - Sources section: [1], [2], [3], [4], [5] (where [5] corresponds to original [8])
+- IMPORTANT: If you cited [8] in your text, it MUST appear as [5] in Sources if [1], [2], [3], [4] were also cited. The Sources numbers MUST match the sequential position of the original citations.
+- The Sources section should always start at [1] and continue sequentially [2], [3], [4], etc., based on the order of the original citations you used.
 
-CRITICAL: AVOID DUPLICATE CITATIONS FOR AUTO-UPLOADED PDFS:
-- If a PDF was auto-uploaded from a search result (marked with 📄 PDF auto-uploaded), it means the PDF file AND its URL both appear in search results.
-- If you cited both the search result URL (e.g., [1]) AND the PDF ([PDF]) in your response, DO NOT list them separately in Sources.
-- Instead, ONLY list the PDF entry with its URL: "- [PDF] [filename] (auto-uploaded from search) - [original URL]"
-- DO NOT include the search result URL as a separate numbered citation (e.g., do NOT list "[1] Title - URL" if that URL is the same as the auto-uploaded PDF URL).
-- This prevents duplicate citations for the same source.
-- When renumbering citations sequentially, skip any search result URLs that match auto-uploaded PDF URLs.
+CRITICAL: HANDLING AUTO-UPLOADED PDFS:
+- If a PDF was auto-uploaded from a search result (marked with 📄 PDF auto-uploaded), it will have a citation number just like web sources.
+- PDFs use sequential citation numbers (e.g., [1], [2], [3]) - they are NOT labeled as "[PDF]"
+- When a search result is a PDF, cite it with its number (e.g., [4]) and list it in Sources with that number
+- Example: If search result [4] is a PDF and you cited it:
+  - Inline: "According to the guidelines [4]..."
+  - Sources: "[4] filename.pdf (auto-uploaded from search) - https://example.com/file.pdf (from search result [4])"
 
-- If you referenced PDF content that was NOT auto-uploaded (user-uploaded), include it LAST in the Sources section with the actual PDF filename.
-- Format: "- [PDF] [actual PDF filename]" (e.g., "- [PDF] Caries-Risk Assessment and Management.pdf")
-- If the PDF was auto-uploaded from search results, include the original URL: "- [PDF] [filename] (auto-uploaded from search) - [original URL]"
+- If you referenced PDF content that was NOT auto-uploaded (user-uploaded), include it in the Sources section with its sequential number and the actual PDF filename.
+- Format: "- [4] [actual PDF filename]" (e.g., "- [4] Caries-Risk Assessment and Management.pdf")
+- If the PDF was auto-uploaded from search results, include the original URL: "- [4] [filename] (auto-uploaded from search) - [original URL]"
 - Use the exact filename that was provided, not generic text like "Uploaded PDF document"
+- PDFs use sequential numbers just like web sources - they are NOT labeled as "[PDF]"
 - IMPORTANT: In the Sources section, put each citation on its own separate line for readability.
 
 CRITICAL: PDF TABLE EXTRACTION ACCURACY:
@@ -703,28 +762,119 @@ CRITICAL: PDF TABLE EXTRACTION ACCURACY:
 - When describing table content, quote specific cell values and row/column positions when possible
 
 Example citation format:
-"The American Dental Association recommends fluoride use [1]. Research shows it reduces tooth decay by 25% [2]. Another study [7] confirms these findings. According to the uploaded document, this aligns with current guidelines [PDF]."
+"The American Dental Association recommends fluoride use [1]. Research shows it reduces tooth decay by 25% [2]. Another study [7] confirms these findings. According to the uploaded document, this aligns with current guidelines [4]."
 
-Example Sources section (each citation as a bullet point on its own line):
+Step-by-step Sources creation for this example:
+1. Extract inline citations: [1], [2], [7], [4] (4 unique citations - note [4] is the PDF)
+2. Sort: [1], [2], [4], [7]
+3. Create mapping: [1]→[1], [2]→[2], [4]→[3], [7]→[4]
+4. Write Sources with 4 entries:
+
 ## Sources
-- [1] Title of Source 1 - URL
-- [2] Title of Source 2 - URL
-- [3] Title of Source 7 - URL  (Note: Even though cited as [7] inline, it's [3] in Sources)
-- [PDF] [actual PDF filename]  (e.g., "- [PDF] Caries-Risk Assessment and Management.pdf")
+- [1] Title of Source 1 - URL (from search result [1])
+- [2] Title of Source 2 - URL (from search result [2])
+- [3] Uploaded PDF filename.pdf (user-uploaded PDF)
+- [4] Title of Source 7 - URL (from search result [7])
+
+Note: PDFs are numbered sequentially just like web sources - they use numbers like [3], not [PDF]
+
+Real example with non-sequential citations:
+INLINE TEXT USES: [1], [3], [5], [6], [8] (5 unique citations)
+
+Step 1: Extract unique citations from text: [1], [3], [5], [6], [8]
+Step 2: Sort in ascending order: [1], [3], [5], [6], [8]
+Step 3: Create sequential mapping:
+  - [1] from search → [1] in Sources (1st position)
+  - [3] from search → [2] in Sources (2nd position)
+  - [5] from search → [3] in Sources (3rd position)
+  - [6] from search → [4] in Sources (4th position)
+  - [8] from search → [5] in Sources (5th position)
+
+Step 4: Write Sources section with exactly 5 entries (MANDATORY FORMAT):
+## Sources
+- [1] Title of Source 1 - URL (from search result [1])
+- [2] Title of Source 3 - URL (from search result [3])
+- [3] Title of Source 5 - URL (from search result [5])
+- [4] Title of Source 6 - URL (from search result [6])
+- [5] Title of Source 8 - URL (from search result [8]) ← CRITICAL: [8] must appear as [5]!
+
+MANDATORY: Each entry MUST include "(from search result [X])" to show the mapping!
+
+VERIFICATION CHECKLIST:
+✓ Used 5 unique citations inline [1], [3], [5], [6], [8] → Sources has 5 numbered entries → CORRECT
+✓ Citation [8] appears as "[5] ... (from search result [8])" in Sources → CORRECT
+✓ Each Sources entry shows "(from search result [X])" → CORRECT
+✗ Sources only has 4 entries but you used 5 citations → WRONG - ADD THE MISSING ONE
+✗ Citation [7] used inline but not in Sources → WRONG - ADD IT
+✗ Wrote [2][7] but only listed [2] in Sources → WRONG - ADD [7] TOO
 
 Example for auto-uploaded PDF (avoiding duplicate):
-If search result [1] is a PDF that was auto-uploaded, and you cited both [1] and [PDF]:
+If search result [1] is a PDF that was auto-uploaded, and you cited [1] inline:
 ## Sources
-- [1] Title of Source 2 - URL (renumbered, skipping the PDF URL)
-- [2] Title of Source 3 - URL
-- [PDF] BP_CariesRiskAssessment.pdf (auto-uploaded from search) - https://example.com/file.pdf
-(NOTE: The URL from search result [1] is NOT listed separately since it's the same as the PDF URL)
+- [1] BP_CariesRiskAssessment.pdf (auto-uploaded from search) - https://www.aapd.org/media/Policies_Guidelines/BP_CariesRiskAssessment.pdf (from search result [1])
+- [2] Title of Source 2 - URL (from search result [2])
+- [3] Title of Source 3 - URL (from search result [3])
+
+(NOTE: Search result [1] was a PDF, so it appears as [1] with the PDF filename and URL. All citations use sequential numbers.)
+
+Real-world example:
+If search results show:
+  [1] BEST PRACTICES: CARIES-RISK ASSESSMENT - https://www.aapd.org/media/Policies_Guidelines/BP_CariesRiskAssessment.pdf (PDF)
+  [2] Caries-risk Assessment and Management - https://www.aapd.org/research/.../caries-risk-assessment/
+  [3] Another source - URL
+  And you cited [1], [2], [3]:
+## Sources
+- [1] BP_CariesRiskAssessment.pdf (auto-uploaded from search) - https://www.aapd.org/media/Policies_Guidelines/BP_CariesRiskAssessment.pdf (from search result [1])
+- [2] Caries-risk Assessment and Management - https://www.aapd.org/research/.../caries-risk-assessment/ (from search result [2])
+- [3] Another source - URL (from search result [3])
+(Note: PDFs use regular numbers like [1], not special labels like [PDF])
 
 CRITICAL RENUMBERING RULE: 
 - In your response text, use the citation numbers from the search results as-is (e.g., [1], [2], [7], [11])
 - In the Sources section, renumber them sequentially starting from [1] (e.g., [1], [2], [3], [4])
 - Only list sources that you actually cited in your response text
 - The Sources section numbers should always be sequential: [1], [2], [3], [4], etc., regardless of inline citation numbers
+- CRITICAL: Every citation number you use inline MUST appear in Sources. If you used [8] inline, [8] MUST be in Sources (as its renumbered equivalent).
+- DOUBLE-CHECK: Before finishing, scan your response text for ALL citation numbers [X], then verify each [X] appears in Sources section.
+
+STEP-BY-STEP RENUMBERING PROCESS:
+1. Identify ALL unique citation numbers you used in your response text (e.g., if you used [1], [2], [4], [8], [12], the unique set is [1], [2], [4], [8], [12])
+2. Sort these numbers in ascending order: [1], [2], [4], [8], [12]
+3. Create a mapping where each original number maps to its sequential position:
+   - [1] → [1] (1st in sequence)
+   - [2] → [2] (2nd in sequence)
+   - [4] → [3] (3rd in sequence)
+   - [8] → [4] (4th in sequence)
+   - [12] → [5] (5th in sequence)
+4. In your Sources section, list them in this sequential order:
+   - [1] Source 1 - URL
+   - [2] Source 2 - URL
+   - [3] Source 4 - URL (was [4] in search results)
+   - [4] Source 8 - URL (was [8] in search results)
+   - [5] Source 12 - URL (was [12] in search results)
+
+CRITICAL VALIDATION CHECKLIST:
+Before finalizing your Sources section, complete this validation:
+
+1. EXTRACT all citation numbers from your response text:
+   - Scan for [1], [2], [3], etc.
+   - Don't forget multiple citations like [2][7] - count both [2] and [7]
+   - Write down the complete list of unique numbers
+
+2. COUNT the unique citation numbers:
+   - Example: [1], [2], [3], [7], [8] = 5 unique citations
+
+3. VERIFY Sources section has the correct number of entries:
+   - If you found 5 unique citations, Sources must have exactly 5 numbered entries
+   - Each entry must show "(from search result [X])"
+
+4. CHECK each citation number is present:
+   - Did you cite [7]? → Sources must have "[4] ... (from search result [7])" or similar
+   - Did you cite [8]? → Sources must have "[5] ... (from search result [8])" or similar
+   - Missing any citation number is a CRITICAL ERROR
+
+5. SPECIAL CHECK for combined citations:
+   - If you wrote [2][7], verify BOTH [2] and [7] appear separately in Sources
 
 DISCLAIMER REQUIREMENT:
 - If the search results are unable to confirm a definitive diagnosis, provide insufficient information to reach a conclusion, or the evidence is inconclusive, you MUST include a disclaimer at the end of your response.

@@ -178,6 +178,24 @@ dental_agent/
 └── README.md             # This file
 ```
 
+## Deployment
+
+For production deployment, see **[DEPLOYMENT.md](DEPLOYMENT.md)** for detailed guides covering:
+
+- **Streamlit Cloud** (easiest - free hosting)
+- **Docker** (containerized deployment)
+- **Self-hosted** (VPS/server deployment)
+- **Cloud platforms** (AWS, GCP, Azure, Railway)
+
+Quick Docker deployment:
+```bash
+docker build -t dental-agent .
+docker run -d -p 8501:8501 \
+  -e GOOGLE_API_KEY=your_key \
+  -e EXA_API_KEY=your_key \
+  dental-agent
+```
+
 ## Architecture
 
 ### Agent Components
