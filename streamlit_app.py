@@ -320,6 +320,9 @@ with st.sidebar:
                     
                 except Exception as e:
                     st.error(f"❌ Error uploading file: {str(e)}")
+                    import traceback
+                    with st.expander("Debug Info"):
+                        st.code(traceback.format_exc())
         else:
             st.info(f"📄 {file_name} is already uploaded and available.")
     
