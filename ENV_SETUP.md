@@ -49,6 +49,56 @@ To use a different Gemini model:
 MODEL=gemini-2.0-flash-exp
 ```
 
+## Search Configuration
+
+### Search Results Configuration
+
+Control how many results are returned per search:
+
+```bash
+# Number of search results per query (default: 8)
+SEARCH_RESULTS_COUNT=8
+
+# Maximum characters per search result (default: 3000)
+MAX_CHARACTERS_PER_RESULT=3000
+```
+
+### Agent Iteration Limits
+
+Control how many times the agent can call tools:
+
+```bash
+# Maximum recursion limit for agent iterations (default: 25)
+# This controls how many tool calls the agent can make per query
+# Formula: typically allows ~12 search iterations (2 * max_iterations + 1)
+RECURSION_LIMIT=25
+```
+
+### PDF Auto-Upload Configuration
+
+Automatically download and upload PDFs from search results:
+
+```bash
+# Enable automatic PDF upload from search results (default: false)
+AUTO_UPLOAD_PDFS=true
+
+# Maximum PDF size in MB for auto-upload (default: 25)
+MAX_PDF_SIZE_MB=25
+```
+
+**How it works:**
+- When enabled, PDFs found in search results are automatically downloaded and uploaded to Gemini File API
+- The agent can then reference PDF content directly instead of just URLs
+- Checks for existing files in Gemini API before uploading to avoid duplicates
+- If download/upload fails, falls back to URL-only citation
+
+**Recommendations:**
+- `SEARCH_RESULTS_COUNT`: 5-10 results is usually sufficient (default: 8)
+- `MAX_CHARACTERS_PER_RESULT`: 2000-5000 characters (default: 3000)
+- `RECURSION_LIMIT`: 15-50 iterations (default: 25 allows ~12 search calls)
+- `AUTO_UPLOAD_PDFS`: Enable if you want PDFs from search results to be directly accessible (default: false)
+- `MAX_PDF_SIZE_MB`: 10-50 MB (default: 25) - larger files take longer to download/upload
+
 ## Complete .env Example
 
 ```bash
@@ -61,6 +111,18 @@ EXA_API_KEY=your_exa_api_key_here
 
 # Optional: Override domains (uncomment to use custom list)
 # DENTAL_GUIDELINE_DOMAINS=ada.org,aapd.org,cdc.gov,pubmed.ncbi.nlm.nih.gov
+
+# Optional: Search configuration
+# SEARCH_RESULTS_COUNT=8
+# MAX_CHARACTERS_PER_RESULT=3000
+# RECURSION_LIMIT=25
+
+# Optional: PDF auto-upload from search results
+# AUTO_UPLOAD_PDFS=true  # Enable to auto-upload PDFs from search results
+# MAX_PDF_SIZE_MB=25     # Maximum PDF size for auto-upload
+
+# Optional: Date filtering (prioritize recent guidelines)
+# MIN_DATE_YEARS_AGO=5  # Set to 0 to disable
 ```
 
 ## Quick Start
