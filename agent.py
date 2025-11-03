@@ -60,6 +60,10 @@ def get_dental_guideline_domains() -> List[str]:
         "journals.ada.org",            # Journal of the American Dental Association
     ]
     
+    # Remove duplicates while preserving order
+    seen = set()
+    default_domains = [d for d in default_domains if not (d in seen or seen.add(d))]
+    
     # Try to get domains from environment variable
     env_domains = os.environ.get("DENTAL_GUIDELINE_DOMAINS")
     
@@ -370,16 +374,20 @@ def upload_pdf_to_gemini(pdf_bytes: bytes, filename: str, source_url: str, gemin
         return None
 
 
-def create_dental_tool(exa_client: Exa):
+def create_dental_tool(exa_client: Exa, domains: Optional[List[str]] = None):
     """
     Create the dental guideline search tool.
     
     Args:
         exa_client: Initialized Exa client
+        domains: Optional list of domains to search. If None, uses default domains.
         
     Returns:
         Tool: The dental_guideline_search tool
     """
+    # Use provided domains or fall back to default
+    search_domains = domains if domains is not None else DENTAL_GUIDELINE_DOMAINS
+    
     @tool
     def dental_guideline_search(query: str) -> str:
         """
@@ -405,7 +413,7 @@ def create_dental_tool(exa_client: Exa):
         """
         try:
             logger.info(f"Searching for query: '{query}'")
-            logger.info(f"Domains: {DENTAL_GUIDELINE_DOMAINS}")
+            logger.info(f"Domains: {search_domains}")
             
             # Get date filter from environment (default: prioritize last 5 years)
             # Set MIN_DATE_YEARS_AGO in .env to change (e.g., "3" for 3 years, "0" to disable)
@@ -432,7 +440,7 @@ def create_dental_tool(exa_client: Exa):
             # - start_published_date: Prioritize recent content (if configured)
             search_params = {
                 "query": query,
-                "include_domains": DENTAL_GUIDELINE_DOMAINS,
+                "include_domains": search_domains,
                 "num_results": num_results,
                 "type": "auto",  # Automatically chooses best search type
                 "text": {
@@ -889,9 +897,12 @@ Be thorough, accurate, and always cite your sources. Include the disclaimer when
     return [SystemMessage(content=citation_instructions)] + state["messages"]
 
 
-def create_agent():
+def create_agent(domains: Optional[List[str]] = None):
     """
     Initialize the LLM, tools, and create the LangGraph ReAct agent.
+    
+    Args:
+        domains: Optional list of domains to search. If None, uses default domains.
     
     Returns:
         CompiledGraph: The compiled LangGraph agent
@@ -905,7 +916,7 @@ def create_agent():
     
     # Initialize Exa client and create tool
     exa_client = initialize_exa_client()
-    dental_tool = create_dental_tool(exa_client)
+    dental_tool = create_dental_tool(exa_client, domains=domains)
     
     # List of all tools the agent has access to
     tools = [dental_tool]

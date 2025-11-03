@@ -26,13 +26,20 @@ st.set_page_config(
     layout="wide"
 )
 
+# Get default domains from agent module
+from agent import get_dental_guideline_domains
+
 # Initialize session state
 if "messages" not in st.session_state:
     st.session_state["messages"] = []
 
+if "selected_domains" not in st.session_state:
+    # Initialize with all domains selected by default
+    st.session_state["selected_domains"] = get_dental_guideline_domains()
+
 if "agent" not in st.session_state:
     try:
-        st.session_state["agent"] = create_agent()
+        st.session_state["agent"] = create_agent(domains=st.session_state["selected_domains"])
     except Exception as e:
         st.error(f"Failed to initialize agent: {e}")
         st.stop()
@@ -262,6 +269,90 @@ with st.sidebar:
     st.header("⚙️ Controls")
     if st.button("🗑️ Clear Conversation", use_container_width=True):
         reset_conversation()
+    
+    st.markdown("---")
+    st.markdown("### 🔍 Search Domains")
+    st.markdown("Select which domains to search:")
+    
+    # Get all available domains
+    all_domains = get_dental_guideline_domains()
+    
+    # Create a categorized view with friendly names
+    domain_categories = {
+        "Professional Dental Associations": {
+            "ada.org": "ADA (American Dental Association)",
+            "aapd.org": "AAPD (American Academy of Pediatric Dentistry)",
+            "aae.org": "AAE (American Association of Endodontists)",
+            "aaop.org": "AAOP (American Academy of Periodontology)",
+            "aaoms.org": "AAOMS (American Association of Oral and Maxillofacial Surgeons)",
+            "cdc.gov": "CDC (includes oral health division)",
+        },
+        "Medical Associations": {
+            "aap.org": "AAP (American Academy of Pediatrics)",
+            "publications.aap.org": "AAP Publications (pediatric oral health)",
+        },
+        "Government Regulatory Agencies": {
+            "fda.gov": "FDA (Food and Drug Administration)",
+        },
+        "Evidence-Based Research Sources": {
+            "pubmed.ncbi.nlm.nih.gov": "PubMed (biomedical literature)",
+            "nidcr.nih.gov": "NIDCR (National Institute of Dental Research)",
+            "nih.gov": "NIH (National Institutes of Health)",
+            "cochranelibrary.com": "Cochrane Library (systematic reviews)",
+            "who.int": "WHO (World Health Organization)",
+            "iadr.org": "IADR (International Association for Dental Research)",
+            "journals.ada.org": "JADA (Journal of the ADA)",
+        }
+    }
+    
+    # Quick selection buttons
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("✅ Select All", use_container_width=True):
+            st.session_state["selected_domains"] = all_domains.copy()
+            # Clear checkbox states to force update
+            for domain in all_domains:
+                key = f"domain_{domain}"
+                if key in st.session_state:
+                    st.session_state[key] = True
+            # Recreate agent with new domains
+            st.session_state["agent"] = create_agent(domains=st.session_state["selected_domains"])
+            st.rerun()
+    with col2:
+        if st.button("❌ Deselect All", use_container_width=True):
+            st.session_state["selected_domains"] = []
+            # Clear checkbox states to force update
+            for domain in all_domains:
+                key = f"domain_{domain}"
+                if key in st.session_state:
+                    st.session_state[key] = False
+            # Recreate agent with new domains
+            st.session_state["agent"] = create_agent(domains=st.session_state["selected_domains"])
+            st.rerun()
+    
+    # Domain selection by category
+    selected_domains_new = []
+    for category, domains in domain_categories.items():
+        with st.expander(f"**{category}**", expanded=False):
+            for domain, label in domains.items():
+                if domain in all_domains:  # Only show if domain is in the available list
+                    is_selected = st.checkbox(
+                        label,
+                        value=domain in st.session_state["selected_domains"],
+                        key=f"domain_{domain}"
+                    )
+                    if is_selected:
+                        selected_domains_new.append(domain)
+    
+    # Check if selection changed
+    if sorted(selected_domains_new) != sorted(st.session_state["selected_domains"]):
+        st.session_state["selected_domains"] = selected_domains_new
+        # Recreate agent with new domains
+        st.session_state["agent"] = create_agent(domains=st.session_state["selected_domains"])
+        st.success(f"✅ Updated to {len(selected_domains_new)} domain(s)")
+    
+    # Show count
+    st.caption(f"📊 {len(st.session_state['selected_domains'])} domain(s) selected")
     
     st.markdown("---")
     st.markdown("### 📄 Upload PDF Document")
